@@ -11,6 +11,8 @@ from scipy import stats
 from tqdm import tqdm
 from scipy.linalg import cholesky
 from scipy.stats import norm
+import datetime
+import math
 
 def generate_random_string():
     return "".join(
@@ -269,5 +271,97 @@ def generate_from_correlations(column_metadata, num_records, correlation_matrix)
             synthetic_data[column] = generate_random_integer(params)
 
     return pd.DataFrame(synthetic_data)
+
+
+def convert_datetime_no_pandas(metadata, generated_data):
+    """
+    Convert float timestamps to formatted datetime strings for columns with 'date' in datatype.
+    metadata: list of dicts
+    generated_data: dict of lists (column: list of values)
+    Returns: dict of lists (in-place modification)
+    """
+    meta_lookup = {row["variable_name"]: row for row in metadata}
+    for column, values in generated_data.items():
+        meta = meta_lookup.get(column, {})
+        if "date" in str(meta.get("datatype", "")):
+            fmt = meta.get("coding")
+            if fmt:
+                generated_data[column] = [
+                    datetime.datetime.fromtimestamp(v).strftime(fmt) if v is not None and not (isinstance(v, float) and math.isnan(v)) else v
+                    for v in values
+                ]
+    return generated_data
+
+
+def decode_categorical_string_no_pandas(metadata, generated_data):
+    """
+    Decode categorical string columns using coding dict from metadata.
+    metadata: list of dicts
+    generated_data: dict of lists (column: list of values)
+    Returns: dict of lists (in-place modification)
+    """
+    for row in metadata:
+        if row.get("datatype") == "categorical string":
+            variable = row["variable_name"]
+            coding = row.get("coding")
+            if coding and isinstance(coding, str):
+                try:
+                    coding = ast.literal_eval(coding)
+                except Exception:
+                    continue
+            if coding and isinstance(coding, dict) and variable in generated_data:
+                generated_data[variable] = [coding.get(v, v) for v in generated_data[variable]]
+    return generated_data
+
+
+def completeness_no_pandas(metadata, generated_data):
+    """
+    Randomly set values to None to match the completeness percentage in metadata.
+    metadata: list of dicts
+    generated_data: dict of lists (column: list of values)
+    Returns: dict of lists (in-place modification)
+    """
+    num_rows = len(next(iter(generated_data.values()))) if generated_data else 0
+    for row in metadata:
+        col_name = row["variable_name"]
+        completeness_level = row.get("completeness")
+        if col_name in generated_data and completeness_level is not None:
+            retain_count = int((completeness_level / 100) * num_rows)
+            indices = list(range(num_rows))
+            random.shuffle(indices)
+            retain_indices = set(indices[:retain_count])
+            generated_data[col_name] = [
+                v if i in retain_indices else None
+                for i, v in enumerate(generated_data[col_name])
+            ]
+    return generated_data
+
+
+def add_shared_identifier_no_pandas(tables_dict, metadata, identifier_column, num_records):
+    """
+    Add a shared identifier column to all tables in tables_dict.
+    tables_dict: dict of {table_name: {column: list of values}}
+    metadata: list of dicts
+    identifier_column: str
+    num_records: int
+    Returns: tables_dict (in-place modification)
+    """
+    # Find the datatype for the identifier column
+    id_meta = next((row for row in metadata if row["variable_name"] == identifier_column), None)
+    if not id_meta:
+        return tables_dict
+    dtype = id_meta.get("datatype", "")
+    if "integer" in dtype:
+        shared_ids = random.sample(range(1_000_000_000, 10_000_000_000), num_records)
+    elif "float" in dtype:
+        shared_ids = [random.uniform(1_000_000_000, 10_000_000_000) for _ in range(num_records)]
+    else:
+        shared_ids = [
+            "".join(random.choices(string.ascii_letters + string.digits, k=10))
+            for _ in range(num_records)
+        ]
+    for table in tables_dict.values():
+        table[identifier_column] = shared_ids[:]
+    return tables_dict
 
 
