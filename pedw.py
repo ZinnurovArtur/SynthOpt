@@ -20,9 +20,17 @@ def show_tables_and_select_all(adapter: TrinoDBAdapter):
         cursor.close()
         adapter.engine.close()
 
-def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000):
+def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
     cursor = adapter.get_cursor()
-    cursor.execute(f"SELECT * FROM iceberg.pedw.pedw_admissions_20231127 LIMIT {limit}")
+    # Use ROW_NUMBER() for pagination since Trino does not support OFFSET
+    query = f'''
+        SELECT * FROM (
+            SELECT *, row_number() OVER () as rn
+            FROM iceberg.pedw.pedw_admissions_20231127
+        ) t
+        WHERE rn > {offset} AND rn <= {offset} + {limit}
+    '''
+    cursor.execute(query)
     return cursor.fetchall()
 
 
