@@ -1,3 +1,8 @@
 
 *.h
 *.env
+synthopt/__pycache__/
+
+synthopt/process/__pycache__/
+
+synthopt/generate/__pycache__/
