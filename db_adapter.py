@@ -28,14 +28,19 @@ class TrinoDBAdapter:
 
     def save_synthetic_table(self, table_name, data, schema='iceberg.arthur'):
         """
-        Save synthetic data (dict of lists) to a new table in Trino/Iceberg.
+        Save synthetic data (dict of lists or DataFrame) to a new table in Trino/Iceberg.
         Args:
             table_name (str): Name of the table to create (without schema prefix).
-            data (dict of lists): Synthetic data, keys are column names, values are lists of values.
+            data (dict of lists or DataFrame): Synthetic data, keys are column names, values are lists of values.
             schema (str): Schema to use (default 'iceberg.arthur').
         """
         import math
         import datetime
+        import pandas as pd
+
+        # Convert DataFrame to dict of lists if needed
+        if isinstance(data, pd.DataFrame):
+            data = {col: data[col].tolist() for col in data.columns}
 
         # Infer column types from the first non-None value in each column
         type_map = {
@@ -101,16 +106,22 @@ class TrinoDBAdapter:
 
         col_list = ', '.join([f'"{col}"' for col in columns])
         print(f"Inserting {n_rows} rows into {full_table_name}...")
-        for i in range(n_rows):
-            row = [data[col][i] for col in columns]
-            sql_values = ', '.join([py_to_sql_literal(v) for v in row])
-            insert_sql = f'INSERT INTO {full_table_name} ({col_list}) VALUES ({sql_values})'
+        # Insert data in batches for efficiency
+        batch_size = 1000
+        for batch_start in range(0, n_rows, batch_size):
+            batch_end = min(batch_start + batch_size, n_rows)
+            batch_rows = []
+            for i in range(batch_start, batch_end):
+                row = [data[col][i] for col in columns]
+                sql_values = '(' + ', '.join([py_to_sql_literal(v) for v in row]) + ')'
+                batch_rows.append(sql_values)
+            values_clause = ', '.join(batch_rows)
+            insert_sql = f'INSERT INTO {full_table_name} ({col_list}) VALUES {values_clause}'
             try:
                 cursor.execute(insert_sql)
-                if (i+1) % 100 == 0 or i == n_rows-1:
-                    print(f"Inserted {i+1}/{n_rows} rows...")
+                print(f"Inserted rows {batch_start+1}-{batch_end} of {n_rows}")
             except Exception as e:
-                print(f"Error inserting row {i+1}: {e}")
+                print(f"Error inserting batch {batch_start+1}-{batch_end}: {e}")
         cursor.close()
         print(f"Done writing {n_rows} rows to {full_table_name}.")
 
