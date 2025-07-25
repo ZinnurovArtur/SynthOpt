@@ -97,3 +97,62 @@ def process_structural_metadata(data, datetime_formats=None, table_name=None, re
         return combined_metadata, combined_data
     else:
         return combined_metadata
+
+def process_structural_metadata_sql(data_tuples, column_names, datetime_formats=None, table_name=None):
+    """
+    Args:
+        data_tuples (list of tuple): The data rows (from SQL).
+        column_names (list of str): The column names (from SQL cursor).
+        datetime_formats: Not used in this basic version.
+        table_name: Optional table name for metadata.
+    Returns:
+        List of dicts, one per column, with keys: variable_name, datatype, completeness, values, coding, table_name.
+    """
+    n_rows = len(data_tuples)
+    # Transpose data for column-wise access
+    columns_data = {col: [] for col in column_names}
+    for row in data_tuples:
+        for col, val in zip(column_names, row):
+            columns_data[col].append(val)
+
+    metadata = []
+    for col in column_names:
+        col_data = columns_data[col]
+        # Completeness: percent of non-None/non-empty values
+        non_null_count = sum(1 for v in col_data if v is not None and v != "")
+        completeness = (non_null_count / n_rows) * 100 if n_rows > 0 else 0
+        # Datatype: improved detection
+        types = set(type(v).__name__ for v in col_data if v is not None)
+        if len(types) == 1:
+            only_type = list(types)[0]
+            if only_type in ("int", "float"):
+                # Heuristic: if column name suggests code/id, treat as string
+                if any(x in col.lower() for x in ["cd", "id", "code", "grp", "spec", "mthd"]):
+                    datatype = "string"
+                else:
+                    datatype = only_type
+            else:
+                datatype = only_type
+        elif len(types) == 0:
+            datatype = "unknown"
+        else:
+            # Mixed types: treat as string
+            datatype = "string"
+        # Value range: min/max for numbers, unique values for others
+        if all(isinstance(v, (int, float)) for v in col_data if v is not None) and datatype not in ("string",):
+            try:
+                value_range = (min(v for v in col_data if v is not None), max(v for v in col_data if v is not None))
+            except ValueError:
+                value_range = None
+        else:
+            value_range = list(sorted(set(v for v in col_data if v is not None)))
+        meta = {
+            "variable_name": col,
+            "datatype": datatype,
+            "completeness": completeness,
+            "values": value_range,
+            "coding": None,
+            "table_name": table_name or "None"
+        }
+        metadata.append(meta)
+    return metadata
