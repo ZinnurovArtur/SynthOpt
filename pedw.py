@@ -22,7 +22,6 @@ def show_tables_and_select_all(adapter: TrinoDBAdapter):
 
 def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
     cursor = adapter.get_cursor()
-    # Use ROW_NUMBER() for pagination since Trino does not support OFFSET
     query = f'''
         SELECT * FROM (
             SELECT *, row_number() OVER () as rn
