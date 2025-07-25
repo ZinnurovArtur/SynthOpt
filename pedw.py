@@ -2,7 +2,7 @@ from db_adapter import TrinoDBAdapter
 
 def show_tables_and_select_all(adapter: TrinoDBAdapter):
 
-    cursor, conn = adapter.get_cursor()
+    cursor = adapter.get_cursor()
     try:
         # List all tables in the schema
         cursor.execute("SHOW TABLES FROM iceberg.pedw")
@@ -18,7 +18,13 @@ def show_tables_and_select_all(adapter: TrinoDBAdapter):
             print(row)
     finally:
         cursor.close()
-        conn.close()
+        adapter.engine.close()
+
+def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000):
+    cursor = adapter.get_cursor()
+    cursor.execute(f"SELECT * FROM iceberg.pedw.pedw_admissions_20231127 LIMIT {limit}")
+    return cursor.fetchall()
+
 
 if __name__ == "__main__":
-    show_tables_and_select_all()
+    show_tables_and_select_all(TrinoDBAdapter(username="zinnurar",host="trino.feasibility.sail.pk.serp.ac.uk"))
