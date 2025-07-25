@@ -26,7 +26,7 @@ class TrinoDBAdapter:
         cursor = self.engine.cursor()
         return cursor
 
-    def save_synthetic_table(self, table_name, data, schema='iceberg.arthur'):
+    def save_synthetic_table(self, table_name, data, schema='iceberg.arthur', append=False):
         """
         Save synthetic data (dict of lists or DataFrame) to a new table in Trino/Iceberg.
         Args:
@@ -77,15 +77,16 @@ class TrinoDBAdapter:
         col_defs = ', '.join([f'"{col}" {col_types[col]}' for col in columns])
         full_table_name = f'{schema}.{table_name}'
         create_sql = f'CREATE TABLE IF NOT EXISTS {full_table_name} ({col_defs})'
-        print(f"Creating table with: {create_sql}")
         cursor = self.get_cursor()
-        try:
-            cursor.execute(f"DROP TABLE IF EXISTS {full_table_name}")
-            cursor.execute(create_sql)
-        except Exception as e:
-            print(f"Error creating table: {e}")
-            cursor.close()
-            return
+        if not append:
+            print(f"Creating table with: {create_sql}")
+            try:
+                cursor.execute(f"DROP TABLE IF EXISTS {full_table_name}")
+                cursor.execute(create_sql)
+            except Exception as e:
+                print(f"Error creating table: {e}")
+                cursor.close()
+                return
 
         # Insert data row by row
         def py_to_sql_literal(val):
