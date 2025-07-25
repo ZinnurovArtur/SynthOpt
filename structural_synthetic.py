@@ -13,7 +13,7 @@ date_formats = None
 adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk")
 
 # Fetch the admissions table as a list of tuples
-rows = get_table_admisions(adapter, limit=100000)
+rows = get_table_admisions(adapter, limit=10000)
 
 
 # Get column names from the cursor description
@@ -25,14 +25,15 @@ cursor.close()
 
 
 # Convert to DataFrame
-#DATA = pd.read_csv('pedw_admission_20231127.csv')
+DATA = pd.DataFrame(rows,columns=columns,dtype=str)
+#print(DATA)
 
-STRUCT_METADATA = process_structural_metadata_sql(rows, columns, datetime_formats=date_formats)
-print(STRUCT_METADATA)
+STRUCT_METADATA = process_structural_metadata(DATA, datetime_formats=date_formats)
+#print(STRUCT_METADATA)
 
 
-STRUCT_SYNTHETIC_DATA = generate_structural_synthetic_data_from_sql(STRUCT_METADATA, num_records=len(rows))
+STRUCT_SYNTHETIC_DATA = generate_structural_synthetic_data(STRUCT_METADATA, num_records=len(rows))
 
-print(STRUCT_SYNTHETIC_DATA)
+#print(STRUCT_SYNTHETIC_DATA)
 
 adapter.save_synthetic_table('pedw_admissions_20231127_structural_synthetic', STRUCT_SYNTHETIC_DATA)
