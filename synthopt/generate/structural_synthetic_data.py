@@ -1,5 +1,6 @@
 from synthopt.generate.data_generation import generate_random_value
 from synthopt.generate.data_generation import convert_datetime_no_pandas, decode_categorical_string_no_pandas, completeness_no_pandas, add_shared_identifier_no_pandas
+from synthopt.generate.data_generation import convert_datetime, decode_categorical_string, completeness, add_shared_identifier
 from tqdm import tqdm
 import pandas as pd
 
@@ -90,10 +91,12 @@ def generate_structural_synthetic_data_from_sql(metadata, num_records=1000, iden
                 data.append(value)
             generated_data[table_name][column_name] = data
 
+
         # Apply pure Python helpers
         generated_data[table_name] = convert_datetime_no_pandas(variables, generated_data[table_name])
         generated_data[table_name] = decode_categorical_string_no_pandas(variables, generated_data[table_name])
         generated_data[table_name] = completeness_no_pandas(variables, generated_data[table_name])
+
 
         # Count and print how many rows have been written for this table
         if generated_data[table_name]:
