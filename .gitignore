@@ -6,3 +6,5 @@ synthopt/__pycache__/
 synthopt/process/__pycache__/
 
 synthopt/generate/__pycache__/
+
+__pycache__/
