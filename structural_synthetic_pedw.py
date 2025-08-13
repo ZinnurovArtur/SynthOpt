@@ -34,13 +34,7 @@ def get_column_names():
     global _column_names_cache
     if _column_names_cache is None:
         cursor = adapter.get_cursor()
-        cursor.execute(f'''
-            SELECT * FROM (
-                SELECT *, row_number() OVER () as rn
-                FROM iceberg.pedw.pedw_admissions_20231127
-            ) t
-            WHERE rn = 1
-        ''')
+        cursor.execute("SELECT * FROM iceberg.pedw.pedw_admissions_20231127 LIMIT 1")
         _column_names_cache = [desc[0] for desc in cursor.description]
         cursor.close()
     return _column_names_cache
@@ -83,7 +77,7 @@ def collect_metadata_sample():
     print("=== Collecting Structural Metadata from 100k Sample ===")
         
     # Collect 100k rows for metadata
-    SAMPLE_SIZE = 100000
+    SAMPLE_SIZE = 10000
     print(f"Collecting metadata from {SAMPLE_SIZE} rows")
     
     try:
@@ -109,13 +103,23 @@ def collect_metadata_sample():
         print(f"Error collecting metadata: {e}")
         raise
 
+def get_existing_data_chunk(offset, chunk_size):
     """Get existing data chunk from the synthetic table"""
     try:
         cursor = adapter.get_cursor()
+        # First get the column names from the synthetic table
+        cursor.execute("SELECT * FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic LIMIT 1")
+        column_names = [desc[0] for desc in cursor.description]
+        cursor.close()
+        
+        # Build a query that explicitly selects all columns except any potential row_number column
+        cursor = adapter.get_cursor()
         cursor.execute(f'''
-            SELECT * FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic
-            ORDER BY alf_e
-            LIMIT {chunk_size} OFFSET {offset}
+            SELECT * FROM (
+                SELECT *, row_number() OVER (ORDER BY alf_e) as temp_row_num
+                FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic
+            ) t
+            WHERE temp_row_num > {offset} AND temp_row_num <= {offset + chunk_size}
         ''')
         rows = cursor.fetchall()
         cursor.close()
@@ -123,12 +127,116 @@ def collect_metadata_sample():
         if not rows:
             return None
         
-        columns = get_column_names()
-        return pd.DataFrame.from_records(rows, columns=columns)
+        # Add the temp_row_num column to the column names to match the query result
+        column_names_with_temp = column_names + ['temp_row_num']
+        
+        # Create DataFrame and then remove the temp_row_num column
+        df = pd.DataFrame.from_records(rows, columns=column_names_with_temp)
+        df = df.drop('temp_row_num', axis=1)
+        
+        return df
     except Exception as e:
         print(f"Error getting existing data for offset {offset}: {e}")
         return None
 
+def check_table_health():
+    """Check if the synthetic table is in a healthy state"""
+    try:
+        cursor = adapter.get_cursor()
+        cursor.execute("SELECT COUNT(*) FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic LIMIT 1")
+        cursor.fetchone()
+        cursor.close()
+        return True
+    except Exception as e:
+        print(f"Table health check failed: {e}")
+        return False
+
+def update_synthetic_table_with_new_data(metadata, offset, chunk_size, first_chunk, total_rows):
+    """Update synthetic table with new synthetic data generated from real table metadata"""
+    # Calculate how many rows to process for this chunk
+    remaining_rows = total_rows - offset
+    rows_to_process = min(chunk_size, remaining_rows)
+    
+    if rows_to_process <= 0:
+        return 0
+    
+    # Get existing data from synthetic table
+    existing_data = get_existing_data_chunk(offset, rows_to_process)
+    if existing_data is None:
+        print(f"No existing data found for offset {offset}")
+        return 0
+    
+    # Generate new synthetic data using real table metadata
+    new_synthetic_data = generate_structural_synthetic_data(metadata, num_records=rows_to_process)
+    
+    # Update the synthetic table in place with new data (with enhanced retry logic)
+    max_retries = 5  # Increased retries
+    for attempt in range(max_retries):
+        try:
+            # Check table health before attempting update
+            if not check_table_health():
+                print(f"Table health check failed for offset {offset}, skipping...")
+                return 0
+            
+            # Add longer delay between attempts to allow metadata to stabilize
+            if attempt > 0:
+                delay = random.uniform(5, 15)  # Longer delays for metadata conflicts
+                print(f"Waiting {delay:.1f} seconds before retry {attempt + 1}...")
+                time.sleep(delay)
+            
+            adapter.update_existing_table('pedw_admissions_20231127_structural_synthetic', new_synthetic_data, schema='iceberg.arthur', identifier_column='alf_e')
+            
+            with progress_lock:
+                save_offset(offset + rows_to_process)
+            
+            print(f"Updated synthetic table for rows {offset+1}-{offset+rows_to_process}")
+            return rows_to_process
+            
+        except Exception as e:
+            error_msg = str(e)
+            if "ICEBERG_COMMIT_ERROR" in error_msg or "conflicting delete files" in error_msg.lower() or "metadata location" in error_msg.lower():
+                print(f"Attempt {attempt + 1}/{max_retries} failed for offset {offset}: Iceberg metadata error - {error_msg}")
+                if attempt < max_retries - 1:
+                    # Longer delay for metadata conflicts
+                    delay = random.uniform(10, 30)
+                    print(f"Waiting {delay:.1f} seconds for metadata to stabilize...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    print(f"Failed to update after {max_retries} attempts for offset {offset}")
+                    print("This chunk will be skipped. You may need to restart the process later.")
+                    return 0
+            else:
+                print(f"Unexpected error for offset {offset}: {error_msg}")
+                return 0
+    
+    return 0
+
+def update_synthetic_table_completely(metadata):
+    """Update the entire synthetic table with new synthetic data generated from real table metadata"""
+    print("=== Updating Synthetic Table with New Synthetic Data ===")
+    
+    offset = get_last_offset()
+    first_chunk = (offset == 0)
+    max_workers = 1  # Reduced from 5 to minimize conflicts
+    TOTAL_ROWS = get_synthetic_table_row_count()
+    
+    print(f"Starting update from offset {offset} for {TOTAL_ROWS} total rows")
+    print("Generating new synthetic data using real table metadata...")
+    print(f"Using {max_workers} workers to minimize Iceberg conflicts")
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        chunk_offsets = list(range(offset, TOTAL_ROWS, CHUNK_SIZE))
+        
+        for i, chunk_offset in enumerate(chunk_offsets):
+            is_first = first_chunk and (i == 0)
+            futures.append(executor.submit(update_synthetic_table_with_new_data, metadata, chunk_offset, CHUNK_SIZE, is_first, TOTAL_ROWS))
+        
+        for future in as_completed(futures):
+            rows_processed = future.result()
+            # Add small delay between chunk completions to reduce conflicts
+            time.sleep(random.uniform(0.1, 0.5))
 
     """Update existing data with synthetic values"""
     print("=== Updating Existing PEDW Data with Synthetic Values ===")
@@ -182,8 +290,8 @@ def generate_synthetic_data(metadata):
     
     offset = get_last_offset()
     first_chunk = (offset == 0)
-    max_workers = 5
-    TOTAL_ROWS = get_synthetic_table_row_count()
+    max_workers = 2
+    TOTAL_ROWS = get_admissions_row_count()
     
     print(f"Starting generation from offset {offset} for {TOTAL_ROWS} total rows")
     
@@ -202,9 +310,10 @@ def main():
     """Main function for PEDW data processing with synthetic values"""
     print("=== Starting PEDW Data Processing with Synthetic Values ===")
     
-    # Collect metadata from 100k sample
+    # Collect metadata from 100k sample from the REAL table
     metadata = collect_metadata_sample()
 
+    # Generate new synthetic data using real table metadata
     generate_synthetic_data(metadata)
     
     print("=== PEDW Data Processing Complete! ===")
