@@ -23,11 +23,9 @@ def show_tables_and_select_all(adapter: TrinoDBAdapter):
 def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
     cursor = adapter.get_cursor()
     query = f'''
-        SELECT * FROM (
-            SELECT *, row_number() OVER () as rn
-            FROM iceberg.pedw.pedw_admissions_20231127
-        ) t
-        WHERE rn > {offset} AND rn <= {offset} + {limit}
+        SELECT * FROM iceberg.pedw.pedw_admissions_20231127
+        ORDER BY alf_e
+        OFFSET {offset} LIMIT {limit}
     '''
     cursor.execute(query)
     return cursor.fetchall()
