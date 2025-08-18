@@ -17,7 +17,11 @@ date_formats = ["%Y-%m-%d"]
 
 # Progress tracking file
 PROGRESS_FILE = 'pedw_progress.txt'
-CHUNK_SIZE = 10000  # Increased for better efficiency
+CHUNK_SIZE = 30_000         
+COMMIT_WINDOW = 60_000# commit every ~0.9M rows (30 chunks)
+
+TARGET_TABLE = "iceberg.arthur._tmp_pedw_synth_test"
+
 
 # Add a lock for thread-safe progress file updates
 progress_lock = threading.Lock()
@@ -27,6 +31,93 @@ adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.se
 
 # Cache for column names to avoid repeated database calls
 _column_names_cache = None
+
+def ensure_target_table(metadata):
+    """
+    Create target table once if needed. If you already created it, you can skip columns_sql.
+    We infer a schema from metadata here only if you really need CREATE TABLE.
+    """
+    # (Option A) If table exists already, just set writer props:
+
+    adapter.ensure_table(TARGET_TABLE)
+
+    # (Option B) If you need to CREATE, provide explicit columns:
+    # columns_sql = """
+    #   "col1" VARCHAR,
+    #   "col2" BIGINT,
+    #   ...
+    # """
+    # adapter.ensure_table(TARGET_TABLE, columns_sql=columns_sql)
+
+
+def post_maintenance():
+    cur = adapter.get_cursor()
+    try:
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize(file_size_threshold => '512MB')")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize_manifests")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE expire_snapshots(retention_threshold => '7d')")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE remove_orphan_files(retention_threshold => '7d')")
+    finally:
+        cur.close()
+
+
+def generate_and_load_all(metadata):
+    print("=== Generating New PEDW Synthetic Data ===")
+    ensure_target_table(metadata)
+
+    total_rows = 60_000
+    start_offset = 0
+    print(f"Resuming at offset {start_offset} of {total_rows}")
+    print(f"Chunk size = {CHUNK_SIZE}")
+
+    cur = adapter.get_cursor()
+    try:
+        # Schema & writer settings
+        cur.execute("USE iceberg.arthur")
+        adapter.set_writer_settings(cur)
+
+        committed_until = start_offset
+        rows_since_maintenance = 0
+
+        for offset in range(start_offset, total_rows, CHUNK_SIZE):
+            remaining = total_rows - offset
+            rows_to_generate = min(CHUNK_SIZE, remaining)
+            print(f"Generating chunk offset={offset}, rows={rows_to_generate}")
+
+            # generate synthetic data
+            df = generate_structural_synthetic_data(metadata, num_records=rows_to_generate)
+            cols = list(df.columns)
+            data_dict = {c: df[c].tolist() for c in cols}
+
+            # big INSERT(s), split if needed
+            adapter.insert_rows_batch(
+                full_table_name=TARGET_TABLE,
+                data=data_dict,
+                columns=cols,
+                cursor=cur,
+                max_sql_chars=900_000,
+            )
+
+            committed_until = offset + rows_to_generate
+            rows_since_maintenance += rows_to_generate
+
+            # Periodic maintenance checkpoint
+            if rows_since_maintenance >= 30000:  # tune window
+                print(f"Running maintenance at ~{committed_until} rows")
+                post_maintenance()
+                with progress_lock:
+                    save_offset(committed_until)
+                rows_since_maintenance = 0
+
+        # final maintenance
+        post_maintenance()
+        with progress_lock:
+            save_offset(committed_until)
+
+    finally:
+        cur.close()
+
+    print("=== Load complete ===")
 
 @lru_cache(maxsize=1)
 def get_column_names():
@@ -62,22 +153,14 @@ def get_admissions_row_count():
     print(f"Found {count} total rows in pedw_admissions table")
     return count
 
-@lru_cache(maxsize=1)
-def get_synthetic_table_row_count():
-    """Get the actual number of rows in the synthetic table (cached)"""
-    cursor = adapter.get_cursor()
-    cursor.execute("SELECT COUNT(*) FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic")
-    count = cursor.fetchone()[0]
-    cursor.close()
-    print(f"Found {count} total rows in synthetic table")
-    return count
+
 
 def collect_metadata_sample():
     """Collect metadata from a single sample of 100k rows"""
     print("=== Collecting Structural Metadata from 100k Sample ===")
         
     # Collect 100k rows for metadata
-    SAMPLE_SIZE = 10000
+    SAMPLE_SIZE = 100000
     print(f"Collecting metadata from {SAMPLE_SIZE} rows")
     
     try:
@@ -103,168 +186,8 @@ def collect_metadata_sample():
         print(f"Error collecting metadata: {e}")
         raise
 
-def get_existing_data_chunk(offset, chunk_size):
-    """Get existing data chunk from the synthetic table"""
-    try:
-        cursor = adapter.get_cursor()
-        # First get the column names from the synthetic table
-        cursor.execute("SELECT * FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic LIMIT 1")
-        column_names = [desc[0] for desc in cursor.description]
-        cursor.close()
-        
-        # Build a query that explicitly selects all columns except any potential row_number column
-        cursor = adapter.get_cursor()
-        cursor.execute(f'''
-            SELECT * FROM (
-                SELECT *, row_number() OVER (ORDER BY alf_e) as temp_row_num
-                FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic
-            ) t
-            WHERE temp_row_num > {offset} AND temp_row_num <= {offset + chunk_size}
-        ''')
-        rows = cursor.fetchall()
-        cursor.close()
-        
-        if not rows:
-            return None
-        
-        # Add the temp_row_num column to the column names to match the query result
-        column_names_with_temp = column_names + ['temp_row_num']
-        
-        # Create DataFrame and then remove the temp_row_num column
-        df = pd.DataFrame.from_records(rows, columns=column_names_with_temp)
-        df = df.drop('temp_row_num', axis=1)
-        
-        return df
-    except Exception as e:
-        print(f"Error getting existing data for offset {offset}: {e}")
-        return None
-
-def check_table_health():
-    """Check if the synthetic table is in a healthy state"""
-    try:
-        cursor = adapter.get_cursor()
-        cursor.execute("SELECT COUNT(*) FROM iceberg.arthur.pedw_admissions_20231127_structural_synthetic LIMIT 1")
-        cursor.fetchone()
-        cursor.close()
-        return True
-    except Exception as e:
-        print(f"Table health check failed: {e}")
-        return False
-
-def update_synthetic_table_with_new_data(metadata, offset, chunk_size, first_chunk, total_rows):
-    """Update synthetic table with new synthetic data generated from real table metadata"""
-    # Calculate how many rows to process for this chunk
-    remaining_rows = total_rows - offset
-    rows_to_process = min(chunk_size, remaining_rows)
-    
-    if rows_to_process <= 0:
-        return 0
-    
-    # Get existing data from synthetic table
-    existing_data = get_existing_data_chunk(offset, rows_to_process)
-    if existing_data is None:
-        print(f"No existing data found for offset {offset}")
-        return 0
-    
-    # Generate new synthetic data using real table metadata
-    new_synthetic_data = generate_structural_synthetic_data(metadata, num_records=rows_to_process)
-    
-    # Update the synthetic table in place with new data (with enhanced retry logic)
-    max_retries = 5  # Increased retries
-    for attempt in range(max_retries):
-        try:
-            # Check table health before attempting update
-            if not check_table_health():
-                print(f"Table health check failed for offset {offset}, skipping...")
-                return 0
-            
-            # Add longer delay between attempts to allow metadata to stabilize
-            if attempt > 0:
-                delay = random.uniform(5, 15)  # Longer delays for metadata conflicts
-                print(f"Waiting {delay:.1f} seconds before retry {attempt + 1}...")
-                time.sleep(delay)
-            
-            adapter.update_existing_table('pedw_admissions_20231127_structural_synthetic', new_synthetic_data, schema='iceberg.arthur', identifier_column='alf_e')
-            
-            with progress_lock:
-                save_offset(offset + rows_to_process)
-            
-            print(f"Updated synthetic table for rows {offset+1}-{offset+rows_to_process}")
-            return rows_to_process
-            
-        except Exception as e:
-            error_msg = str(e)
-            if "ICEBERG_COMMIT_ERROR" in error_msg or "conflicting delete files" in error_msg.lower() or "metadata location" in error_msg.lower():
-                print(f"Attempt {attempt + 1}/{max_retries} failed for offset {offset}: Iceberg metadata error - {error_msg}")
-                if attempt < max_retries - 1:
-                    # Longer delay for metadata conflicts
-                    delay = random.uniform(10, 30)
-                    print(f"Waiting {delay:.1f} seconds for metadata to stabilize...")
-                    time.sleep(delay)
-                    continue
-                else:
-                    print(f"Failed to update after {max_retries} attempts for offset {offset}")
-                    print("This chunk will be skipped. You may need to restart the process later.")
-                    return 0
-            else:
-                print(f"Unexpected error for offset {offset}: {error_msg}")
-                return 0
-    
-    return 0
-
-def update_synthetic_table_completely(metadata):
-    """Update the entire synthetic table with new synthetic data generated from real table metadata"""
-    print("=== Updating Synthetic Table with New Synthetic Data ===")
-    
-    offset = get_last_offset()
-    first_chunk = (offset == 0)
-    max_workers = 1  # Reduced from 5 to minimize conflicts
-    TOTAL_ROWS = get_synthetic_table_row_count()
-    
-    print(f"Starting update from offset {offset} for {TOTAL_ROWS} total rows")
-    print("Generating new synthetic data using real table metadata...")
-    print(f"Using {max_workers} workers to minimize Iceberg conflicts")
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        chunk_offsets = list(range(offset, TOTAL_ROWS, CHUNK_SIZE))
-        
-        for i, chunk_offset in enumerate(chunk_offsets):
-            is_first = first_chunk and (i == 0)
-            futures.append(executor.submit(update_synthetic_table_with_new_data, metadata, chunk_offset, CHUNK_SIZE, is_first, TOTAL_ROWS))
-        
-        for future in as_completed(futures):
-            rows_processed = future.result()
-            # Add small delay between chunk completions to reduce conflicts
-            time.sleep(random.uniform(0.1, 0.5))
-
-    """Update existing data with synthetic values"""
-    print("=== Updating Existing PEDW Data with Synthetic Values ===")
-    
-    offset = get_last_offset()
-    first_chunk = (offset == 0)
-    max_workers = 5
-    TOTAL_ROWS = get_synthetic_table_row_count()
-    
-    print(f"Starting update from offset {offset} for {TOTAL_ROWS} total rows")
-    if columns_to_update:
-        print(f"Updating columns: {columns_to_update}")
-    else:
-        print("Updating all columns except identifiers")
-    
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = []
-        chunk_offsets = list(range(offset, TOTAL_ROWS, CHUNK_SIZE))
-        
-        for i, chunk_offset in enumerate(chunk_offsets):
-            is_first = first_chunk and (i == 0)
-            futures.append(executor.submit(update_and_save_chunk, metadata, chunk_offset, CHUNK_SIZE, is_first, TOTAL_ROWS, columns_to_update))
-        
-        for future in as_completed(futures):
-            rows_processed = future.result()
-
 def generate_and_save_chunk(metadata, offset, chunk_size, first_chunk, total_rows):
-    """Generate synthetic data for a chunk and save it"""
+    """Generate synthetic data for a chunk and save it using db_adapter"""
     # Calculate how many rows to generate for this chunk
     remaining_rows = total_rows - offset
     rows_to_generate = min(chunk_size, remaining_rows)
@@ -272,39 +195,51 @@ def generate_and_save_chunk(metadata, offset, chunk_size, first_chunk, total_row
     if rows_to_generate <= 0:
         return 0
     
-    # Generate synthetic data using metadata
-    STRUCT_SYNTHETIC_DATA = generate_structural_synthetic_data(metadata, num_records=rows_to_generate)
-    
-    # Save synthetic data, append if not first chunk
-    adapter.save_synthetic_table('pedw_admissions_20231127_structural_synthetic', STRUCT_SYNTHETIC_DATA, append=not first_chunk)
-    
-    with progress_lock:
-        save_offset(offset + rows_to_generate)
-    
-    print(f"Generated and saved synthetic data for rows {offset+1}-{offset+rows_to_generate}")
-    return rows_to_generate
+    try:
+        print(f"Processing chunk: offset {offset}, rows {rows_to_generate}")
+        
+        # Generate synthetic data using metadata
+        synthetic_data = generate_structural_synthetic_data(metadata, num_records=rows_to_generate)
+        
+        print(f"Generated synthetic data with {rows_to_generate} rows")
+        
+        # Save synthetic data using db_adapter,
+        adapter.save_synthetic_table('pedw_admissions_20231127_structural_synthetic', synthetic_data, schema='iceberg.arthur')
+        
+        with progress_lock:
+            save_offset(offset + rows_to_generate)
+        
+        print(f"Successfully processed {rows_to_generate} rows (offset {offset} -> {offset + rows_to_generate})")
+        return rows_to_generate
+        
+    except Exception as e:
+        print(f"Error processing chunk at offset {offset}: {e}")
+        return 0
 
 def generate_synthetic_data(metadata):
     """Generate completely new synthetic data using the collected metadata"""
     print("=== Generating New PEDW Synthetic Data ===")
     
     offset = get_last_offset()
-    first_chunk = (offset == 0)
-    max_workers = 2
+    max_workers = 1  # Single worker to minimize conflicts and S3 metadata
     TOTAL_ROWS = get_admissions_row_count()
     
     print(f"Starting generation from offset {offset} for {TOTAL_ROWS} total rows")
+    print(f"Using chunk size: {CHUNK_SIZE}, workers: {max_workers}")
     
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
         chunk_offsets = list(range(offset, TOTAL_ROWS, CHUNK_SIZE))
         
         for i, chunk_offset in enumerate(chunk_offsets):
-            is_first = first_chunk and (i == 0)
-            futures.append(executor.submit(generate_and_save_chunk, metadata, chunk_offset, CHUNK_SIZE, is_first, TOTAL_ROWS))
+            # First chunk should create the table (append=False), others should append (append=True)
+            is_first_chunk = (i == 0)
+            futures.append(executor.submit(generate_and_save_chunk, metadata, chunk_offset, CHUNK_SIZE, is_first_chunk, TOTAL_ROWS))
         
         for future in as_completed(futures):
             rows_processed = future.result()
+            # Add small delay between chunk completions to reduce S3 metadata conflicts
+            time.sleep(random.uniform(0.2, 0.8))
 
 def main():
     """Main function for PEDW data processing with synthetic values"""
@@ -314,7 +249,7 @@ def main():
     metadata = collect_metadata_sample()
 
     # Generate new synthetic data using real table metadata
-    generate_synthetic_data(metadata)
+    generate_and_load_all(metadata)
     
     print("=== PEDW Data Processing Complete! ===")
 

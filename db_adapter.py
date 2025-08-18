@@ -29,176 +29,235 @@ class TrinoDBAdapter:
         cursor = self.engine.cursor()
         return cursor
 
-    def save_synthetic_table(self, table_name, data, schema='iceberg.arthur', append=False):
-        """
-        Save synthetic data (dict of lists or DataFrame) to a new table in Trino/Iceberg.
-        Args:
-            table_name (str): Name of the table to create (without schema prefix).
-            data (dict of lists or DataFrame): Synthetic data, keys are column names, values are lists of values.
-            schema (str): Schema to use (default 'iceberg.arthur').
-        """
-
-        # Convert DataFrame to dict of lists if needed
-        if isinstance(data, pd.DataFrame):
-            data = {col: data[col].tolist() for col in data.columns}
-
-        # Infer column types from the first non-None value in each column
-        type_map = {
-            int: 'BIGINT',
-            float: 'DOUBLE',
-            str: 'VARCHAR',
-            bool: 'BOOLEAN',
-            datetime.datetime: 'TIMESTAMP',
-        }
-        columns = list(data.keys())
-        n_rows = len(next(iter(data.values()))) if data else 0
-        col_types = {}
-        for col in columns:
-            col_type = 'VARCHAR'  # default
-            for v in data[col]:
-                if v is not None and not (isinstance(v, float) and math.isnan(v)):
-                    py_type = type(v)
-                    if py_type in type_map:
-                        col_type = type_map[py_type]
-                    elif py_type == str:
-                        col_type = 'VARCHAR'
-                    elif py_type == int:
-                        col_type = 'BIGINT'
-                    elif py_type == float:
-                        col_type = 'DOUBLE'
-                    elif py_type == bool:
-                        col_type = 'BOOLEAN'
-                    elif isinstance(v, datetime.datetime):
-                        col_type = 'TIMESTAMP'
-                    break
-            col_types[col] = col_type
-
-        # Build CREATE TABLE statement
-        col_defs = ', '.join([f'"{col}" {col_types[col]}' for col in columns])
-        full_table_name = f'{schema}.{table_name}'
-        create_sql = f'CREATE TABLE IF NOT EXISTS {full_table_name} ({col_defs})'
+    def set_writer_settings(self, cursor):
         cursor = self.get_cursor()
-        if not append:
-            print(f"Creating table with: {create_sql}")
+        cursor.execute("SET SESSION scale_writers = true")
+        cursor.execute("SET SESSION iceberg.target_max_file_size = '1GB'")
+        cursor.close()
+
+    def ensure_table(self, full_table_name: str, columns_sql: str = None):
+        cur = self.get_cursor()
+        # If you already have the table, you can skip CREATE. Otherwise define once.
+        if columns_sql:
+            cur.execute(f"CREATE TABLE IF NOT EXISTS {full_table_name} ({columns_sql})")
+        # Optional but recommended writer target
+        cur.close()
+
+    def insert_rows_batch(self, full_table_name: str, data: dict, columns: list, cursor,
+                        max_sql_chars: int = 900_000, max_tuples_per_insert: int = 10_000):
+        import math, datetime as dt
+
+        def lit(v):
+            if v is None or (isinstance(v, float) and math.isnan(v)): return 'NULL'
+            if isinstance(v, str):   return "'" + v.replace("'", "''") + "'"
+            if isinstance(v, bool):  return 'TRUE' if v else 'FALSE'
+            if isinstance(v, (int, float)): return str(v)
+            if isinstance(v, dt.datetime):  return f"TIMESTAMP '{v.isoformat(sep=' ')}'"
+            return "'" + str(v).replace("'", "''") + "'"
+
+        n = len(next(iter(data.values()))) if data else 0
+        cols = ', '.join(f'"{c}"' for c in columns)
+        prefix = f"INSERT INTO {full_table_name} ({cols}) VALUES "
+        prefix_len = len(prefix)
+
+        batch_values = []
+        current_len = prefix_len
+
+        def flush():
+            nonlocal batch_values, current_len
+            if not batch_values:
+                return 0
+            sql = prefix + ", ".join(batch_values)
+            cursor.execute(sql)
+            cnt = len(batch_values)
+            batch_values = []
+            current_len = prefix_len
+            return cnt
+
+        inserted = 0
+        for i in range(n):
+            row = [data[c][i] for c in columns]
+            tuple_sql = "(" + ", ".join(lit(x) for x in row) + ")"
+            projected_len = current_len + (2 if batch_values else 0) + len(tuple_sql)
+            projected_cnt = len(batch_values) + 1
+
+            if projected_len > max_sql_chars or projected_cnt > max_tuples_per_insert:
+                inserted += flush()
+            batch_values.append(tuple_sql)
+            current_len += (2 if len(batch_values) > 1 else 0) + len(tuple_sql)
+
+        inserted += flush()
+        return inserted
+
+        def save_synthetic_table(self, table_name, data, schema='iceberg.arthur'):
+            """
+            Save synthetic data (dict of lists or DataFrame) to a new table in Trino/Iceberg.
+            Args:
+                table_name (str): Name of the table to create (without schema prefix).
+                data (dict of lists or DataFrame): Synthetic data, keys are column names, values are lists of values.
+                schema (str): Schema to use (default 'iceberg.arthur').
+            """
+
+            # Convert DataFrame to dict of lists if needed
+            if isinstance(data, pd.DataFrame):
+                data = {col: data[col].tolist() for col in data.columns}
+
+            # Infer column types from the first non-None value in each column
+            type_map = {
+                int: 'BIGINT',
+                float: 'DOUBLE',
+                str: 'VARCHAR',
+                bool: 'BOOLEAN',
+                datetime.datetime: 'TIMESTAMP',
+            }
+            columns = list(data.keys())
+            n_rows = len(next(iter(data.values()))) if data else 0
+            col_types = {}
+            for col in columns:
+                col_type = 'VARCHAR'  # default
+                for v in data[col]:
+                    if v is not None and not (isinstance(v, float) and math.isnan(v)):
+                        py_type = type(v)
+                        if py_type in type_map:
+                            col_type = type_map[py_type]
+                        elif py_type == str:
+                            col_type = 'VARCHAR'
+                        elif py_type == int:
+                            col_type = 'BIGINT'
+                        elif py_type == float:
+                            col_type = 'DOUBLE'
+                        elif py_type == bool:
+                            col_type = 'BOOLEAN'
+                        elif isinstance(v, datetime.datetime):
+                            col_type = 'TIMESTAMP'
+                        break
+                col_types[col] = col_type
+
+            # Build CREATE TABLE statement
+            col_defs = ', '.join([f'"{col}" {col_types[col]}' for col in columns])
+            full_table_name = f'{schema}.{table_name}'
+            create_sql = f'CREATE TABLE IF NOT EXISTS {full_table_name} ({col_defs})'
+            cursor = self.get_cursor()
+            
+            # Try to create table if it doesn't exist 
             try:
-                cursor.execute(f"DROP TABLE IF EXISTS {full_table_name}")
                 cursor.execute(create_sql)
+                print(f"Table {full_table_name} ready for data insertion")
             except Exception as e:
-                print(f"Error creating table: {e}")
-                cursor.close()
-                return
+                print(f"Table {full_table_name} already exists or error creating: {e}")
+                return 0
 
-        # Insert data row by row
-        def py_to_sql_literal(val):
-            if val is None or (isinstance(val, float) and math.isnan(val)):
-                return 'NULL'
-            elif isinstance(val, str):
-                safe_val = val.replace("'", "''")
-                return f"'{safe_val}'"
-            elif isinstance(val, bool):
-                return 'TRUE' if val else 'FALSE'
-            elif isinstance(val, (int, float)):
-                return str(val)
-            elif isinstance(val, datetime.datetime):
-                return f"TIMESTAMP '{val.isoformat(sep=' ')}'"
-            else:
-                safe_val = str(val).replace("'", "''")
-                return f"'{safe_val}'"
+            # Insert data row by row
+            def py_to_sql_literal(val):
+                if val is None or (isinstance(val, float) and math.isnan(val)):
+                    return 'NULL'
+                elif isinstance(val, str):
+                    safe_val = val.replace("'", "''")
+                    return f"'{safe_val}'"
+                elif isinstance(val, bool):
+                    return 'TRUE' if val else 'FALSE'
+                elif isinstance(val, (int, float)):
+                    return str(val)
+                elif isinstance(val, datetime.datetime):
+                    return f"TIMESTAMP '{val.isoformat(sep=' ')}'"
+                else:
+                    safe_val = str(val).replace("'", "''")
+                    return f"'{safe_val}'"
 
-        col_list = ', '.join([f'"{col}"' for col in columns])
-        print(f"Inserting {n_rows} rows into {full_table_name}...")
-        # Insert data in batches for efficiency
-        batch_size = 1000
-        for batch_start in range(0, n_rows, batch_size):
-            batch_end = min(batch_start + batch_size, n_rows)
-            batch_rows = []
-            for i in range(batch_start, batch_end):
-                row = [data[col][i] for col in columns]
-                sql_values = '(' + ', '.join([py_to_sql_literal(v) for v in row]) + ')'
-                batch_rows.append(sql_values)
-            values_clause = ', '.join(batch_rows)
-            insert_sql = f'INSERT INTO {full_table_name} ({col_list}) VALUES {values_clause}'
-            try:
-                cursor.execute(insert_sql)
-                print(f"Inserted rows {batch_start+1}-{batch_end} of {n_rows}")
-            except Exception as e:
-                print(f"Error inserting batch {batch_start+1}-{batch_end}: {e}")
-        cursor.close()
-        print(f"Done writing {n_rows} rows to {full_table_name}.")
-
-    def update_existing_table(self, table_name, data, schema='iceberg.arthur', identifier_column='alf_e'):
-        """
-        Update existing table in place with new synthetic data.
-        Args:
-            table_name (str): Name of the existing table to update (without schema prefix).
-            data (DataFrame): Updated data with the same structure as the original table.
-            schema (str): Schema where the table exists (default 'iceberg.pedw').
-            identifier_column (str): Column to use for matching rows (default 'alf_e').
-        """
-        # Convert DataFrame to dict of lists if needed
-        if isinstance(data, pd.DataFrame):
-            data_dict = {col: data[col].tolist() for col in data.columns}
-        else:
-            data_dict = data
-
-        full_table_name = f'{schema}.{table_name}'
-        cursor = self.get_cursor()
-        
-        # Get column names from the data
-        columns = list(data_dict.keys())
-        n_rows = len(next(iter(data_dict.values()))) if data_dict else 0
-        
-        # Helper function to convert Python values to SQL literals
-        def py_to_sql_literal(val):
-            if val is None or (isinstance(val, float) and math.isnan(val)):
-                return 'NULL'
-            elif isinstance(val, str):
-                safe_val = val.replace("'", "''")
-                return f"'{safe_val}'"
-            elif isinstance(val, bool):
-                return 'TRUE' if val else 'FALSE'
-            elif isinstance(val, (int, float)):
-                return str(val)
-            elif isinstance(val, datetime.datetime):
-                return f"TIMESTAMP '{val.isoformat(sep=' ')}'"
-            else:
-                safe_val = str(val).replace("'", "''")
-                return f"'{safe_val}'"
-
-        print(f"Updating {n_rows} rows in {full_table_name}...")
-        
-        # Update data in batches for efficiency
-        batch_size = 1000
-        for batch_start in range(0, n_rows, batch_size):
-            batch_end = min(batch_start + batch_size, n_rows)
-            
-            for i in range(batch_start, batch_end):
-                # Get the identifier value for this row
-                identifier_value = data_dict[identifier_column][i]
-                
-                # Build SET clause for all columns except the identifier
-                set_clauses = []
-                for col in columns:
-                    if col != identifier_column:
-                        value = data_dict[col][i]
-                        sql_value = py_to_sql_literal(value)
-                        set_clauses.append(f'"{col}" = {sql_value}')
-                
-                set_clause = ', '.join(set_clauses)
-                
-                # Build the UPDATE statement
-                identifier_sql_value = py_to_sql_literal(identifier_value)
-                update_sql = f'UPDATE {full_table_name} SET {set_clause} WHERE "{identifier_column}" = {identifier_sql_value}'
-                
+            col_list = ', '.join([f'"{col}"' for col in columns])
+            print(f"Inserting {n_rows} rows into {full_table_name}...")
+            # Insert data in batches for efficiency
+            batch_size = 2000  # Increased from 1000 to handle larger chunks more efficiently
+            for batch_start in range(0, n_rows, batch_size):
+                batch_end = min(batch_start + batch_size, n_rows)
+                batch_rows = []
+                for i in range(batch_start, batch_end):
+                    row = [data[col][i] for col in columns]
+                    sql_values = '(' + ', '.join([py_to_sql_literal(v) for v in row]) + ')'
+                    batch_rows.append(sql_values)
+                values_clause = ', '.join(batch_rows)
+                insert_sql = f'INSERT INTO {full_table_name} ({col_list}) VALUES {values_clause}'
                 try:
-                    cursor.execute(update_sql)
+                    cursor.execute(insert_sql)
+                    print(f"Inserted rows {batch_start+1}-{batch_end} of {n_rows}")
                 except Exception as e:
-                    print(f"Error updating row {i+1} with {identifier_column} = {identifier_value}: {e}")
+                    print(f"Error inserting batch {batch_start+1}-{batch_end}: {e}")
+            cursor.close()
+            print(f"Done writing {n_rows} rows to {full_table_name}.")
+
+        def update_existing_table(self, table_name, data, schema='iceberg.arthur', identifier_column='alf_e'):
+            """
+            Update existing table in place with new synthetic data.
+            Args:
+                table_name (str): Name of the existing table to update (without schema prefix).
+                data (DataFrame): Updated data with the same structure as the original table.
+                schema (str): Schema where the table exists (default 'iceberg.pedw').
+                identifier_column (str): Column to use for matching rows (default 'alf_e').
+            """
+            # Convert DataFrame to dict of lists if needed
+            if isinstance(data, pd.DataFrame):
+                data_dict = {col: data[col].tolist() for col in data.columns}
+            else:
+                data_dict = data
+
+            full_table_name = f'{schema}.{table_name}'
+            cursor = self.get_cursor()
             
-            print(f"Updated rows {batch_start+1}-{batch_end} of {n_rows}")
-        
-        cursor.close()
-        print(f"Done updating {n_rows} rows in {full_table_name}.")
+            # Get column names from the data
+            columns = list(data_dict.keys())
+            n_rows = len(next(iter(data_dict.values()))) if data_dict else 0
+            
+            # Helper function to convert Python values to SQL literals
+            def py_to_sql_literal(val):
+                if val is None or (isinstance(val, float) and math.isnan(val)):
+                    return 'NULL'
+                elif isinstance(val, str):
+                    safe_val = val.replace("'", "''")
+                    return f"'{safe_val}'"
+                elif isinstance(val, bool):
+                    return 'TRUE' if val else 'FALSE'
+                elif isinstance(val, (int, float)):
+                    return str(val)
+                elif isinstance(val, datetime.datetime):
+                    return f"TIMESTAMP '{val.isoformat(sep=' ')}'"
+                else:
+                    safe_val = str(val).replace("'", "''")
+                    return f"'{safe_val}'"
+
+            print(f"Updating {n_rows} rows in {full_table_name}...")
+            
+            # Update data in batches for efficiency
+            batch_size = 1000
+            for batch_start in range(0, n_rows, batch_size):
+                batch_end = min(batch_start + batch_size, n_rows)
+                
+                for i in range(batch_start, batch_end):
+                    # Get the identifier value for this row
+                    identifier_value = data_dict[identifier_column][i]
+                    
+                    # Build SET clause for all columns except the identifier
+                    set_clauses = []
+                    for col in columns:
+                        if col != identifier_column:
+                            value = data_dict[col][i]
+                            sql_value = py_to_sql_literal(value)
+                            set_clauses.append(f'"{col}" = {sql_value}')
+                    
+                    set_clause = ', '.join(set_clauses)
+                    
+                    # Build the UPDATE statement
+                    identifier_sql_value = py_to_sql_literal(identifier_value)
+                    update_sql = f'UPDATE {full_table_name} SET {set_clause} WHERE "{identifier_column}" = {identifier_sql_value}'
+                    
+                    try:
+                        cursor.execute(update_sql)
+                    except Exception as e:
+                        print(f"Error updating row {i+1} with {identifier_column} = {identifier_value}: {e}")
+                
+                print(f"Updated rows {batch_start+1}-{batch_end} of {n_rows}")
+            
+            cursor.close()
+            print(f"Done updating {n_rows} rows in {full_table_name}.")
 
 
 if __name__ == "__main__":
