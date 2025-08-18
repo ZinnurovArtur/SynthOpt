@@ -17,10 +17,9 @@ date_formats = ["%Y-%m-%d"]
 
 # Progress tracking file
 PROGRESS_FILE = 'pedw_progress.txt'
-CHUNK_SIZE = 30_000         
-COMMIT_WINDOW = 60_000# commit every ~0.9M rows (30 chunks)
+CHUNK_SIZE = 500_000         
 
-TARGET_TABLE = "iceberg.arthur._tmp_pedw_synth_test"
+TARGET_TABLE = "iceberg.arthur.pedw_admissions_20231127_structural_synthetic"
 
 
 # Add a lock for thread-safe progress file updates
@@ -53,20 +52,21 @@ def ensure_target_table(metadata):
 def post_maintenance():
     cur = adapter.get_cursor()
     try:
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize(file_size_threshold => '512MB')")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize(file_size_threshold => '256MB')")
         cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize_manifests")
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE expire_snapshots(retention_threshold => '7d')")
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE remove_orphan_files(retention_threshold => '7d')")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE expire_snapshots(retention_threshold => '3d')")
+        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE remove_orphan_files(retention_threshold => '3d')")
     finally:
         cur.close()
 
 
 def generate_and_load_all(metadata):
+ 
     print("=== Generating New PEDW Synthetic Data ===")
     ensure_target_table(metadata)
 
-    total_rows = 60_000
-    start_offset = 0
+    total_rows = get_admissions_row_count()
+    start_offset = get_last_offset()
     print(f"Resuming at offset {start_offset} of {total_rows}")
     print(f"Chunk size = {CHUNK_SIZE}")
 
@@ -95,14 +95,15 @@ def generate_and_load_all(metadata):
                 data=data_dict,
                 columns=cols,
                 cursor=cur,
-                max_sql_chars=900_000,
+                max_tuples_per_insert=500_000,
+                max_sql_chars=1_000_000,
             )
 
             committed_until = offset + rows_to_generate
             rows_since_maintenance += rows_to_generate
 
             # Periodic maintenance checkpoint
-            if rows_since_maintenance >= 30000:  # tune window
+            if rows_since_maintenance >= 500_000:  # tune window
                 print(f"Running maintenance at ~{committed_until} rows")
                 post_maintenance()
                 with progress_lock:
