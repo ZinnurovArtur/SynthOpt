@@ -19,6 +19,7 @@ class TrinoDBAdapter:
             http_scheme="https",
             catalog="iceberg",
             verify=False
+            
         )
 
 
