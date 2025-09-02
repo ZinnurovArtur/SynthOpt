@@ -6,7 +6,7 @@ import time
 import random
 from functools import lru_cache
 import pandas as pd
-from db_adapter import TrinoDBAdapter
+from synthopt.process.db_adapter import TrinoDBAdapter
 
 # Progress tracking file
 PROGRESS_FILE = 'alfs_progress.txt'
