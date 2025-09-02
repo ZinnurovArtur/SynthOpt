@@ -1,19 +1,21 @@
-def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
-    cursor = adapter.get_cursor()
-    query = f'''
-        SELECT * FROM iceberg.pedw.pedw_admissions_20231127
-        ORDER BY alf_e
-        OFFSET {offset} LIMIT {limit}
-    '''
-    cursor.execute(query)
-    return cursor.fetchall()
+from synthopt.process.db_adapter import TrinoDBAdapter
 
-def get_ar_residency_gpreg_table(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
+
+SELECT_AR_RESIDENCY_GPREG_20250602 = "SELECT * FROM iceberg.wdsd.per_residence_gpreg_20250602"
+SELECT_SINGLE_CLEAN_AR_PERS = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_ar_pers"
+SELECT_CLEAN_GEOCHAR_LSOA2001 = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_char_lsoa2001"
+SELECT_CLEAN_GEOCHAR_LSOA2011 = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_char_lsoa2011"
+SELECT_SINGLE_CLEAN_GEO_RALF = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_ralf"
+SELECT_SINGLE_CLEAN_GEO_RALF_LSOA2001 = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_ralf_lsoa2001"
+SELECT_SINGLE_CLEAN_GEO_RALF_LSOA2011 = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_ralf_lsoa2011"
+SELECT_SINGLE_CLEAN_GEO_WALES = "SELECT * FROM iceberg.wdsd.wdsd_single_clean_geo_wales"
+
+
+def get_tables(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0,selectQuery: str = ""):
     cursor = adapter.get_cursor()
     query = f'''
-    SELECT * FROM iceberg.wdsd.ar_residency_gpreg_20250602
-    ORDER BY alf_e
-    OFFSET {offset} LIMIT {limit}
+        {selectQuery}
+        OFFSET {offset} LIMIT {limit}
     '''
     cursor.execute(query)
     return cursor.fetchall()
