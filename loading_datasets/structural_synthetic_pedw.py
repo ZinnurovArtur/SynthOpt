@@ -4,7 +4,7 @@ from functools import lru_cache
 
 from synthopt.process.structural_metadata import process_structural_metadata, process_structural_metadata_sql
 from synthopt.generate.structural_synthetic_data import generate_structural_synthetic_data, generate_structural_synthetic_data_from_sql
-from pedw import get_table_admisions
+from dataset_helpers.pedw import get_admissions_row_count, get_table_admisions
 from db_adapter import TrinoDBAdapter
 import pandas as pd
 
@@ -24,8 +24,6 @@ progress_lock = threading.Lock()
 # Instantiate the adapter
 adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk")
 
-# Cache for column names to avoid repeated database calls
-_column_names_cache = None
 
 def ensure_target_table(metadata):
     """
@@ -61,7 +59,7 @@ def generate_and_load_all(metadata):
     print("=== Generating New PEDW Synthetic Data ===")
     ensure_target_table(metadata)
 
-    total_rows = get_admissions_row_count()
+    total_rows = get_admissions_row_count(adapter)
     start_offset = get_last_offset()
     print(f"Resuming at offset {start_offset} of {total_rows}")
     print(f"Chunk size = {CHUNK_SIZE}")
@@ -116,16 +114,6 @@ def generate_and_load_all(metadata):
 
     print("=== Load complete ===")
 
-@lru_cache(maxsize=1)
-def get_column_names():
-    """Get column names once and cache them"""
-    global _column_names_cache
-    if _column_names_cache is None:
-        cursor = adapter.get_cursor()
-        cursor.execute("SELECT * FROM iceberg.pedw.pedw_admissions_20231127 LIMIT 1")
-        _column_names_cache = [desc[0] for desc in cursor.description]
-        cursor.close()
-    return _column_names_cache
 
 def get_last_offset():
     if os.path.exists(PROGRESS_FILE):
@@ -139,16 +127,6 @@ def get_last_offset():
 def save_offset(offset):
     with open(PROGRESS_FILE, 'w') as f:
         f.write(str(offset))
-
-@lru_cache(maxsize=1)
-def get_admissions_row_count():
-    """Get the actual number of rows in pedw_admissions table (cached)"""
-    cursor = adapter.get_cursor()
-    cursor.execute("SELECT COUNT(*) FROM iceberg.pedw.pedw_admissions_20231127")
-    count = cursor.fetchone()[0]
-    cursor.close()
-    print(f"Found {count} total rows in pedw_admissions table")
-    return count
 
 
 
