@@ -1,9 +1,5 @@
 import os
-import pickle
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-import time
-import random
 from functools import lru_cache
 
 from synthopt.process.structural_metadata import process_structural_metadata, process_structural_metadata_sql
