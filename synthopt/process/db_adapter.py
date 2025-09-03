@@ -22,8 +22,6 @@ class TrinoDBAdapter:
             
         )
 
-
-
     def query(self, sql):
         cursor = self.engine.cursor()
         cursor.execute(sql)
