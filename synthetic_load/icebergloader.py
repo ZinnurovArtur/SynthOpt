@@ -13,11 +13,13 @@ DEFAULT_DATE_FORMATS = ["%Y-%m-%d"]
 
 class IcebergSyntheticLoader:
     """
-    Reusable synthetic data loader for Trino+Iceberg.
+    Reusable synthetic data loader for Trino+Iceberg. 
+
+    Use this for loading largr datasets in chunks
 
     You provide:
       - adapter: TrinoDBAdapter (must expose get_cursor(), set_writer_settings(), ensure_table(), insert_rows_batch())
-      - target_table: fully-qualified, e.g. "iceberg.arthur.my_target"
+      - target_table: fully-qualified, e.g. "iceberg.{usertname}.my_target"
       - chunk_size: rows per generation round
       - progress_file: path to save last committed offset (resumability)
       - fn_rowcount(adapter) -> int
@@ -32,7 +34,7 @@ class IcebergSyntheticLoader:
         adapter,
         target_table: str,
         *,
-        schema_qualified: str = "iceberg.arthur",
+        schema_qualified: str = "iceberg.username.target_table",
         chunk_size: int = 250_000,
         maintenance_every_rows: int = 1_000_000,
         progress_file: str = "loader_progress.txt",
@@ -71,6 +73,7 @@ class IcebergSyntheticLoader:
 
     # ---------- progress ----------
     def _get_last_offset(self) -> int:
+        # Get last committed offset from progress file, or 0 if not found.
         if os.path.exists(self.progress_file):
             try:
                 with open(self.progress_file, "r") as f:
@@ -80,12 +83,14 @@ class IcebergSyntheticLoader:
         return 0
 
     def _save_offset(self, offset: int):
+        # Save last committed offset to progress file.
         with self._progress_lock:
             with open(self.progress_file, "w") as f:
                 f.write(str(offset))
 
     # ---------- maintenance ----------
     def post_maintenance(self):
+        # Apply maintanace operations to the Iceberg to avoid bloating the S3 bucket usually applies after a certain number of rows
         cur = self.adapter.get_cursor()
         try:
             cur.execute(
@@ -103,6 +108,7 @@ class IcebergSyntheticLoader:
 
     # ---------- metadata ----------
     def collect_metadata_sample(self, sample_size: int = 100_000):
+        # Collect metadata by sampling rows using fn_process_metadata
         print(
             f"=== Collecting Structural Metadata from {sample_size:,} sample rows ==="
         )
@@ -161,8 +167,6 @@ class IcebergSyntheticLoader:
     ):
         """
         Autocommit mode (no explicit transactions): large INSERTs and periodic maintenance.
-        If your environment supports explicit transactions and you prefer coalescing snapshots,
-        wrap multiple calls to insert_rows_batch with START TRANSACTION/COMMIT outside this method.
         """
         total_rows = self.fn_rowcount(self.adapter)
         start_offset = self._get_last_offset()
@@ -202,7 +206,7 @@ class IcebergSyntheticLoader:
                     max_tuples_per_insert=max_tuples_per_insert,
                     max_sql_chars=max_sql_chars,
                 )
-                print(f"  ↳ inserted {inserted:,} rows")
+                print(f"inserted {inserted:,} rows")
 
                 committed_until = offset + rows_to_generate
                 rows_since_maintenance += rows_to_generate
