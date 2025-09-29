@@ -79,7 +79,7 @@ class DBHelper:
         finally:
             cursor.close()
 
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=128) # Cache neede to avoid calls to the DB
     def needs_duplicate_alfs(self, table_name: str) -> bool:
         """
         Determine if a table needs duplicate ALFs by comparing row count to distinct ALF count.

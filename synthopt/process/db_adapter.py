@@ -71,7 +71,9 @@ class TrinoDBAdapter:
         batch_values = []
         current_len = prefix_len
 
+
         def flush():
+            # Flush the current batch of values to the database.
             nonlocal batch_values, current_len
             if not batch_values:
                 return 0
