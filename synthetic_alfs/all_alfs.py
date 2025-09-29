@@ -8,7 +8,8 @@ from functools import lru_cache
 import pandas as pd
 from synthopt.process.db_adapter import TrinoDBAdapter
 
-# Progress tracking file
+# Progress tracking file\
+USERNAME = "username"  # Replace with your Trino username
 PROGRESS_FILE = 'alfs_progress.txt'
 CHUNK_SIZE = 100_000         
 
@@ -18,7 +19,7 @@ TARGET_TABLE = "iceberg.arthur.all_distinct_alfs"
 progress_lock = threading.Lock()
 
 # Instantiate the adapter
-adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk",
+adapter = TrinoDBAdapter(username=USERNAME, host="trino.feasibility.sail.pk.serp.ac.uk",
 )
 
 def ensure_target_table():
@@ -125,7 +126,7 @@ def save_alfs_to_table(alfs_set):
     cur = adapter.get_cursor()
     try:
         # Schema & writer settings
-        cur.execute("USE iceberg.arthur")
+        cur.execute(f'USE iceberg.{USERNAME}')
         adapter.set_writer_settings(cur)
         
         committed_until = 0

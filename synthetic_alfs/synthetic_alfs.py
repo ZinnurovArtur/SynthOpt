@@ -2,9 +2,7 @@ import os
 import pickle
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
-import time
 import random
-from functools import lru_cache
 import pandas as pd
 
 from synthopt.process.structural_metadata import process_structural_metadata
@@ -15,14 +13,15 @@ from db_adapter import TrinoDBAdapter
 PROGRESS_FILE = 'synthetic_alfs_progress.txt'
 CHUNK_SIZE = 100_000         
 
-TARGET_TABLE = "iceberg.arthur.synthetic_alfs"
-SOURCE_TABLE = "iceberg.arthur.all_distinct_alfs"
+USERNAME = "username"  # Replace with your Trino username
+TARGET_TABLE = f"iceberg.{USERNAME}.synthetic_alfs" 
+SOURCE_TABLE = f"iceberg.{USERNAME}.all_distinct_alfs"
 
 # Add a lock for thread-safe progress file updates
 progress_lock = threading.Lock()
 
 # Instantiate the adapter
-adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk")
+adapter = TrinoDBAdapter(username=USERNAME, host="trino.feasibility.sail.pk.serp.ac.uk")
 
 def ensure_target_table():
     """
@@ -109,7 +108,7 @@ def generate_and_load_synthetic_alfs(metadata, num_synthetic_alfs=None):
     cur = adapter.get_cursor()
     try:
         # Schema & writer settings
-        cur.execute("USE iceberg.arthur")
+        cur.execute(f"USE iceberg.{USERNAME}")
         adapter.set_writer_settings(cur)
 
         committed_until = 0

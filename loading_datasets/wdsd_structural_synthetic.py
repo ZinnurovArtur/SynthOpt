@@ -9,9 +9,9 @@ from synthopt.generate.structural_synthetic_data import (
 from synthopt.process.db_adapter import TrinoDBAdapter
 from synthopt.process.db_helper import DBHelper
 
-
-TARGET_SCHEMA = "iceberg.arthur"
-SYNTHETIC_ALFS_TABLE = "iceberg.arthur.synthetic_alfs"
+USERNAME = "username"  # Replace with your Trino username
+TARGET_SCHEMA = f"iceberg.{USERNAME}"
+SYNTHETIC_ALFS_TABLE = f"iceberg.{USERNAME}.synthetic_alfs"
 
 
 class WDSDSyntheticGenerator:
@@ -77,7 +77,7 @@ class WDSDSyntheticGenerator:
 def main():
     """Main function to generate synthetic versions of all WDSD tables"""
     adapter = TrinoDBAdapter(
-        username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk"
+        username={USERNAME}, host="trino.feasibility.sail.pk.serp.ac.uk"
     )
     generator = WDSDSyntheticGenerator(adapter)
 
