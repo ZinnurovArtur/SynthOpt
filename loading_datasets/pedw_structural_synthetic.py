@@ -10,10 +10,10 @@ from synthopt.generate.structural_synthetic_data import (
     generate_structural_synthetic_data,
 )
 from synthopt.process.db_helper import DBHelper
-import pandas as pd
 
-TARGET_SCHEMA = "iceberg.arthur"
-SYNTHETIC_ALFS_TABLE = "iceberg.arthur.synthetic_alfs"
+USERNAME = "username"  # Replace with your Trino username
+TARGET_SCHEMA = f"iceberg.{USERNAME}"
+SYNTHETIC_ALFS_TABLE = f"iceberg.{USERNAME}.synthetic_alfs"
 
 
 import numpy as np
@@ -47,13 +47,13 @@ def generate_pedw_with_synthetic_alfs(
 
 def main():
     adapter = TrinoDBAdapter(
-        username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk"
+        username=USERNAME, host="trino.feasibility.sail.pk.serp.ac.uk"
     )
     db_helper = DBHelper(adapter)
     source_table = "iceberg.pedw.pedw_admissions_20250505"
     loader = IcebergSyntheticLoader(
         adapter=adapter,
-        target_table="iceberg.arthur.pedw_admissions_20250505_structural_synthetic",
+        target_table=f"iceberg.{USERNAME}.pedw_admissions_20250505_structural_synthetic",
         schema_qualified=TARGET_SCHEMA,
         chunk_size=500000,
         maintenance_every_rows=500000,

@@ -1,28 +1,44 @@
 import os
 import threading
 from functools import lru_cache
+from dataset_helpers.pedw import (
+    get_column_names,
+)
 
-from synthopt.process.structural_metadata import process_structural_metadata, process_structural_metadata_sql
-from synthopt.generate.structural_synthetic_data import generate_structural_synthetic_data, generate_structural_synthetic_data_from_sql
+
+from synthopt.process.structural_metadata import (
+    process_structural_metadata,
+)
+from synthopt.generate.structural_synthetic_data import (
+    generate_structural_synthetic_data,
+)
 from dataset_helpers.pedw import get_admissions_row_count, get_table_admisions
 from db_adapter import TrinoDBAdapter
 import pandas as pd
 
+
+"""
+This is the test script to generate structural synthetic data for PEDW dataset,
+Use this as a guide and testing 
+"""
 # Set date_formats
 date_formats = ["%Y-%m-%d"]
 
+USERNAME = "username"  # Replace with your Trino username
 # Progress tracking file
-PROGRESS_FILE = 'pedw_progress.txt'
-CHUNK_SIZE = 500_000         
+PROGRESS_FILE = "pedw_progress.txt"
+CHUNK_SIZE = 500_000
 
-TARGET_TABLE = "iceberg.arthur.pedw_admissions_20231127_structural_synthetic"
+TARGET_TABLE = f"iceberg.{USERNAME}.pedw_admissions_20231127_structural_synthetic"
 
 
 # Add a lock for thread-safe progress file updates
 progress_lock = threading.Lock()
 
 # Instantiate the adapter
-adapter = TrinoDBAdapter(username="zinnurar", host="trino.feasibility.sail.pk.serp.ac.uk")
+adapter = TrinoDBAdapter(
+    username={USERNAME}, host="trino.feasibility.sail.pk.serp.ac.uk"
+)
 
 
 def ensure_target_table(metadata):
@@ -30,11 +46,11 @@ def ensure_target_table(metadata):
     Create target table once if needed. If you already created it, you can skip columns_sql.
     We infer a schema from metadata here only if you really need CREATE TABLE.
     """
-    # (Option A) If table exists already, just set writer props:
+    # If table exists already, just set writer props:
 
     adapter.ensure_table(TARGET_TABLE)
 
-    # (Option B) If you need to CREATE, provide explicit columns:
+    # If you need to CREATE, provide explicit columns:
     # columns_sql = """
     #   "col1" VARCHAR,
     #   "col2" BIGINT,
@@ -46,16 +62,22 @@ def ensure_target_table(metadata):
 def post_maintenance():
     cur = adapter.get_cursor()
     try:
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize(file_size_threshold => '256MB')")
+        cur.execute(
+            f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize(file_size_threshold => '256MB')"
+        )
         cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE optimize_manifests")
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE expire_snapshots(retention_threshold => '2d')")
-        cur.execute(f"ALTER TABLE {TARGET_TABLE} EXECUTE remove_orphan_files(retention_threshold => '2d')")
+        cur.execute(
+            f"ALTER TABLE {TARGET_TABLE} EXECUTE expire_snapshots(retention_threshold => '2d')"
+        )
+        cur.execute(
+            f"ALTER TABLE {TARGET_TABLE} EXECUTE remove_orphan_files(retention_threshold => '2d')"
+        )
     finally:
         cur.close()
 
 
 def generate_and_load_all(metadata):
- 
+
     print("=== Generating New PEDW Synthetic Data ===")
     ensure_target_table(metadata)
 
@@ -79,7 +101,9 @@ def generate_and_load_all(metadata):
             print(f"Generating chunk offset={offset}, rows={rows_to_generate}")
 
             # generate synthetic data
-            df = generate_structural_synthetic_data(metadata, num_records=rows_to_generate)
+            df = generate_structural_synthetic_data(
+                metadata, num_records=rows_to_generate
+            )
             cols = list(df.columns)
             data_dict = {c: df[c].tolist() for c in cols}
 
@@ -117,46 +141,46 @@ def generate_and_load_all(metadata):
 
 def get_last_offset():
     if os.path.exists(PROGRESS_FILE):
-        with open(PROGRESS_FILE, 'r') as f:
+        with open(PROGRESS_FILE, "r") as f:
             try:
                 return int(f.read().strip())
             except Exception:
                 return 0
     return 0
 
-def save_offset(offset):
-    with open(PROGRESS_FILE, 'w') as f:
-        f.write(str(offset))
 
+def save_offset(offset):
+    with open(PROGRESS_FILE, "w") as f:
+        f.write(str(offset))
 
 
 def collect_metadata_sample():
     """Collect metadata from a single sample of 100k rows"""
     print("=== Collecting Structural Metadata from 100k Sample ===")
-        
+
     # Collect 100k rows for metadata
     SAMPLE_SIZE = 100000
     print(f"Collecting metadata from {SAMPLE_SIZE} rows")
-    
+
     try:
         # Get sample data
         rows = get_table_admisions(adapter, limit=SAMPLE_SIZE, offset=0)
         if not rows:
             raise ValueError("No data retrieved from database")
-        
+
         # Use cached column names
         columns = get_column_names()
-        
+
         # Convert to DataFrame
         DATA = pd.DataFrame.from_records(rows, columns=columns)
-        
+
         # Process structural metadata
         metadata = process_structural_metadata(DATA, datetime_formats=date_formats)
-        
+
         print(f"Successfully collected metadata from {len(rows)} rows")
-        
+
         return metadata
-        
+
     except Exception as e:
         print(f"Error collecting metadata: {e}")
         raise
@@ -165,15 +189,15 @@ def collect_metadata_sample():
 def main():
     """Main function for PEDW data processing with synthetic values"""
     print("=== Starting PEDW Data Processing with Synthetic Values ===")
-    
+
     # Collect metadata from 100k sample from the REAL table
     metadata = collect_metadata_sample()
 
     # Generate new synthetic data using real table metadata
     generate_and_load_all(metadata)
-    
+
     print("=== PEDW Data Processing Complete! ===")
+
 
 if __name__ == "__main__":
     main()
-
