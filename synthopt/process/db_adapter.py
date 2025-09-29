@@ -7,9 +7,11 @@ import sys
 import math
 import datetime
 import keyring
+import math, datetime as dt
 
 class TrinoDBAdapter:
     def __init__(self, username, host, port=443):
+        # Constuctor to initialize the TrinoDBAdapter with connection parameters.
 
         self.engine = trino.dbapi.connect(
             host=host,
@@ -21,17 +23,21 @@ class TrinoDBAdapter:
             verify=False
             
         )
-
+  
     def query(self, sql):
+        #Testing query function to execute a SQL query and return the results as a pandas DataFrame.
         cursor = self.engine.cursor()
         cursor.execute(sql)
         return pd.DataFrame(cursor.fetchall())
     
     def get_cursor(self):
+        # Function to get a cursor from the Trino connection.
         cursor = self.engine.cursor()
         return cursor
 
     def set_writer_settings(self, cursor):
+        # This function sets session properties for writing data to Iceberg tables. 
+        # This settings is neccesary for not bloating the S3 bucket 
         cursor = self.get_cursor()
         cursor.execute("SET SESSION scale_writers = true")
         cursor.execute("SET SESSION iceberg.target_max_file_size = '1GB'")
@@ -46,7 +52,8 @@ class TrinoDBAdapter:
 
     def insert_rows_batch(self, full_table_name: str, data: dict, columns: list, cursor,
                         max_sql_chars: int = 900_000, max_tuples_per_insert: int = 10_000):
-        import math, datetime as dt
+        
+        # Insert rows batches into the table, with the conversion from dataframe
 
         def lit(v):
             if v is None or (isinstance(v, float) and math.isnan(v)): return 'NULL'
