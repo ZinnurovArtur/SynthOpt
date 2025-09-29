@@ -3,6 +3,7 @@ import pandas as pd
 from typing import List, Tuple, Any
 from synthopt.process.db_adapter import TrinoDBAdapter
 
+
 class DBHelper:
     def __init__(self, adapter: TrinoDBAdapter):
         self.adapter = adapter
@@ -11,7 +12,7 @@ class DBHelper:
     def get_table_rowcount(self, table_name: str) -> int:
         """
         Get number of rows in a table
-        
+
         """
         cursor = self.adapter.get_cursor()
         try:
@@ -24,7 +25,7 @@ class DBHelper:
     def get_table_columns(self, table_name: str) -> List[str]:
         """
         Get column names from a table
-        
+
         """
         cursor = self.adapter.get_cursor()
         try:
@@ -33,10 +34,12 @@ class DBHelper:
         finally:
             cursor.close()
 
-    def get_table_sample(self, table_name: str, limit: int, offset: int = 0) -> List[Tuple]:
+    def get_table_sample(
+        self, table_name: str, limit: int, offset: int = 0
+    ) -> List[Tuple]:
         """
         Get sample data from a table.
-        
+
         """
         cursor = self.adapter.get_cursor()
         try:
@@ -45,47 +48,33 @@ class DBHelper:
         finally:
             cursor.close()
 
-    @lru_cache(maxsize=128)
-    def get_table_schema_sql(self, table_name: str) -> str:
-        """
-        Get CREATE TABLE schema SQL for a table
-        
-        """
-        cursor = self.adapter.get_cursor()
-        try:
-            cursor.execute(f"SHOW CREATE TABLE {table_name}")
-            create_stmt = cursor.fetchone()[0]
-            # Extract column definitions between parentheses
-            start = create_stmt.find("(") + 1
-            end = create_stmt.rfind(")")
-            return create_stmt[start:end]
-        finally:
-            cursor.close()
-
-    def get_random_synthetic_alfs(self, 
-                                synthetic_alfs_table: str,
-                                num_alfs: int, 
-                                allow_duplicates: bool = True) -> List[int]:
+    def get_random_synthetic_alfs(
+        self, synthetic_alfs_table: str, num_alfs: int, allow_duplicates: bool = True
+    ) -> List[int]:
         """
         Get synthetic ALF_E values from a synthetic ALFs table.
-        
+
         """
         cursor = self.adapter.get_cursor()
         try:
             if allow_duplicates:
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     SELECT alf_e 
                     FROM {synthetic_alfs_table} 
                     ORDER BY RAND() 
                     LIMIT {num_alfs}
-                """)
+                """
+                )
             else:
-                cursor.execute(f"""
+                cursor.execute(
+                    f"""
                     SELECT DISTINCT alf_e 
                     FROM {synthetic_alfs_table} 
                     ORDER BY RAND() 
                     LIMIT {num_alfs}
-                """)
+                """
+                )
             return [row[0] for row in cursor.fetchall()]
         finally:
             cursor.close()
@@ -110,5 +99,4 @@ class DBHelper:
         """Clear all cached results"""
         self.get_table_rowcount.cache_clear()
         self.get_table_columns.cache_clear()
-        self.get_table_schema_sql.cache_clear()
         self.needs_duplicate_alfs.cache_clear()
