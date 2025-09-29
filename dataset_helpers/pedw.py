@@ -5,6 +5,7 @@ from functools import lru_cache
 _column_names_cache = None
 
 def show_tables_and_select_all(adapter: TrinoDBAdapter):
+    """Show all tables in the iceberg.pedw schema and select all rows from a specific table."""
 
     cursor = adapter.get_cursor()
     try:
@@ -25,6 +26,7 @@ def show_tables_and_select_all(adapter: TrinoDBAdapter):
         adapter.engine.close()
 
 def get_table_admisions(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0):
+    """Get data from the pedw_admissions table with pagination and offset"""
     cursor = adapter.get_cursor()
     query = f'''
         SELECT * FROM iceberg.pedw.pedw_admissions_20231127
@@ -57,4 +59,5 @@ def get_column_names(adapter: TrinoDBAdapter):
     return _column_names_cache
 
 if __name__ == "__main__":
-    show_tables_and_select_all(TrinoDBAdapter(username="zinnurar",host="trino.feasibility.sail.pk.serp.ac.uk"))
+    # Provide your Trino username
+    show_tables_and_select_all(TrinoDBAdapter(username="username",host="trino.feasibility.sail.pk.serp.ac.uk"))

@@ -14,6 +14,7 @@ WDSD_TABLES = {
 }
 
 def get_tables(adapter: TrinoDBAdapter, limit: int = 10000, offset: int = 0,selectQuery: str = ""):
+    # Test function to get data from any table with pagination and offset
     cursor = adapter.get_cursor()
     query = f'''
         "SELECT * FROM {selectQuery}
