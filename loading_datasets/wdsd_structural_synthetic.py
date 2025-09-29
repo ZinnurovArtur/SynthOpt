@@ -28,8 +28,8 @@ class WDSDSyntheticGenerator:
         loader = IcebergSyntheticLoader(
             adapter=self.adapter,
             target_table=target_table,
-            chunk_size=10000,
-            maintenance_every_rows=10000,
+            chunk_size=500000,
+            maintenance_every_rows=500000,
             progress_file=f"loader_progress_{target_table}.txt",
             fn_rowcount=lambda adapter: self.db_helper.get_table_rowcount(source_table),
             fn_sample=lambda adapter, limit, offset: self.db_helper.get_table_sample(
