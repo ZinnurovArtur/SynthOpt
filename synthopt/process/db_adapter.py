@@ -97,6 +97,7 @@ class TrinoDBAdapter:
 
         inserted = 0
         for i in range(n):
+            #calculate proximete numbers of saved characters of sql
             row = [data[c][i] for c in columns]
             tuple_sql = "(" + ", ".join(lit(x) for x in row) + ")"
             projected_len = current_len + (2 if batch_values else 0) + len(tuple_sql)

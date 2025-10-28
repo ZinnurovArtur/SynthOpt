@@ -36,7 +36,7 @@ def ensure_target_table():
 
 
 def post_maintenance():
-    """Run maintenance operations on the target table"""
+    """Run maintenance operations on the target table to avoid populate s3 bucket"""
     cur = adapter.get_cursor()
     try:
         cur.execute(
