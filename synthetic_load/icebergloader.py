@@ -13,7 +13,7 @@ DEFAULT_DATE_FORMATS = ["%Y-%m-%d"]
 
 class IcebergSyntheticLoader:
     """
-    Reusable synthetic data loader for Trino+Iceberg. 
+    Reusable synthetic data loader for Trino+Iceberg.
 
     Use this for loading largr datasets in chunks
 
@@ -34,7 +34,7 @@ class IcebergSyntheticLoader:
         adapter,
         target_table: str,
         *,
-        schema_qualified: str = "iceberg.username.target_table",
+        schema_qualified: str = "iceberg.username.target_table",  # provide an username here
         chunk_size: int = 250_000,
         maintenance_every_rows: int = 1_000_000,
         progress_file: str = "loader_progress.txt",

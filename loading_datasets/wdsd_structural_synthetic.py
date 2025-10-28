@@ -14,6 +14,7 @@ TARGET_SCHEMA = f"iceberg.{USERNAME}"
 SYNTHETIC_ALFS_TABLE = f"iceberg.{USERNAME}.synthetic_alfs"
 
 
+"""This class represents an the preparation of synthetic generation of WDSD table"""
 class WDSDSyntheticGenerator:
     def __init__(self, adapter: TrinoDBAdapter):
         self.adapter = adapter
